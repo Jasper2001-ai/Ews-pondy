@@ -70,7 +70,7 @@ button,input,select,textarea{font:inherit}button{cursor:pointer;border:0;border-
       <div class="list" id="teamStatus"><div class="empty">Set attendance to see today's team.</div></div>
     </div>
   </div>
-  <div class="footer-note">Local prototype: data is stored in this browser only, not a shared online database. For multi-device team access, connect a backend database. <br>Thank you for your support, team! <span id="footerProgress"></span></div>
+  <div class="footer-note">Shared mode: published broadcasts and assignment progress are stored in the connected Supabase database. <br>Thank you for your support, team! <span id="footerProgress"></span></div>
 </section>
 
 <section class="page" id="attendance">
@@ -429,9 +429,19 @@ function runAllocation(){
 async function publish(){if(!adminVerified){toast("Admin sign-in required.");return}if(!state.allocations.length){toast("Generate an allocation first.");return}let keys=state.allocations.map(a=>[a.owner,a.city,a.station,a.half,a.assigned].join("|"));if(new Set(keys).size!==keys.length){toast("Duplicate assignment detected. Review before publishing.");return}state.allocations.forEach(a=>{if(!a.status)a.status="Pending"});const ok=await persistPublishedAllocation();if(!ok)return;state.published=true;save();toast("Allocation published to Supabase. Members can now load it on their devices.")}
 function stationModal(index=-1){if(!adminVerified)return;let s=index>=0?state.stations[index]:{member:MEMBERS[0],city:"",station:"",network:""};openModal(`<h2>${index>=0?"Edit station":"Add master station"}</h2><p class="muted small">Add one station to the permanent master register.</p><div class="field"><label>Owner member</label><select id="mMember">${MEMBERS.map(n=>`<option ${s.member===n?"selected":""}>${esc(n)}</option>`).join("")}</select></div><div class="field"><label>Market / city</label><input id="mCity" value="${esc(s.city)}" placeholder="e.g. Dallas"></div><div class="field"><label>Station call sign</label><input id="mStation" value="${esc(s.station)}" placeholder="e.g. KDFW"></div><div class="field"><label>Network (required)</label><input id="mNetwork" value="${esc(s.network||"")}" placeholder="e.g. NBC, CBS, ABC, FOX" required></div><div class="modalfoot"><button class="ghost" onclick="closeModal()">Cancel</button><button class="primary" id="saveStation">Save station</button></div>`);document.getElementById("saveStation").onclick=()=>{let v={member:document.getElementById("mMember").value,city:document.getElementById("mCity").value.trim(),station:document.getElementById("mStation").value.trim(),network:document.getElementById("mNetwork").value.trim()};if(!v.city||!v.station||!v.network){toast("Enter the market, station call sign and network.");return}if(index>=0)state.stations[index]=v;else state.stations.push(v);closeModal();save();toast("Master station saved.")}}
 function openModal(content){document.getElementById("modal").innerHTML=content;document.getElementById("modalBack").classList.add("show")}function closeModal(){document.getElementById("modalBack").classList.remove("show")}document.getElementById("modalBack").onclick=e=>{if(e.target.id==="modalBack")closeModal()};
-document.getElementById("saveDate").onclick=async()=>{if(!adminVerified){toast("Admin sign-in required.");return}state.date=document.getElementById("broadcastDate").value;state.day=document.getElementById("broadcastDay").value.trim();state.published=false;save();const ok=await saveBroadcastAndAttendance();if(ok)toast("Broadcast details saved to Supabase.")};
+document.getElementById("saveDate").onclick=async()=>{
+  if(!adminVerified){toast("Admin sign-in required.");return}
+  const nextDate=document.getElementById("broadcastDate").value;
+  const nextDay=document.getElementById("broadcastDay").value.trim();
+  const changed=nextDate!==state.date||nextDay!==state.day;
+  state.date=nextDate;state.day=nextDay;
+  if(changed)state.published=false;
+  save();
+  const ok=await saveBroadcastAndAttendance();
+  if(ok)toast("Broadcast details saved to Supabase.");
+};
 document.getElementById("saveAttendance").onclick=async()=>{if(!adminVerified){toast("Admin sign-in required.");return}const ok=await saveBroadcastAndAttendance();if(ok)toast("Attendance saved to Supabase.")};
-document.getElementById("broadcastDate").addEventListener("change",async e=>{if(!admin){state.date=e.target.value;await loadMemberDataForSelectedName();}});
+document.getElementById("broadcastDate").addEventListener("change",async e=>{if(!admin){state.date=e.target.value;await loadMemberDataForSelectedName(e.target.value||null);}});
 document.getElementById("runAllocation").onclick=()=>{if(!adminVerified){toast("Sign in as admin first.");return}if(confirm("Generate a new draft? This replaces the current daily draft and clears its completion marks."))runAllocation()};
 document.getElementById("publishAllocation").onclick=()=>{if(!adminVerified){toast("Sign in as admin first.");return}publish()};
 document.getElementById("addStationBtn").onclick=()=>stationModal();
@@ -495,14 +505,18 @@ async function loadAdminData(){
 }
 async function ensureBroadcast(){
   if(!state.date||!state.day){toast("Enter broadcast date and day first.");return null;}
-  const {data,error}=await sb.from("broadcasts").upsert({broadcast_date:state.date,broadcast_day:state.day,published:false},{onConflict:"broadcast_date"}).select().single();
+  // Do not silently unpublish an already-published broadcast when the admin
+  // only saves attendance/details without changing the allocation.
+  const payload={broadcast_date:state.date,broadcast_day:state.day};
+  if(!state.published)payload.published=false;
+  const {data,error}=await sb.from("broadcasts").upsert(payload,{onConflict:"broadcast_date"}).select().single();
   if(error){toast("Broadcast save failed: "+error.message);return null;}
   state.broadcastId=data.id;return data.id;
 }
 async function saveBroadcastAndAttendance(){
   if(!adminVerified)return false;
   const bid=await ensureBroadcast();if(!bid)return false;
-  const rows=MEMBERS.map(name=>{const a=attendanceFor(name);return {broadcast_id:bid,member_name:name,first_half:a.first,second_half:a.second};});
+  const rows=MEMBERS.map(name=>{const a=attendanceFor(name);return {broadcast_id:bid,member_name:name,first_half:a.first,second_half:a.second,second_half_markets:state.secondHalfMarkets[name]||[]};});
   const {error}=await sb.from("attendance").upsert(rows,{onConflict:"broadcast_id,member_name"});
   if(error){toast("Attendance save failed: "+error.message);return false;}
   localStorage.setItem(KEY,JSON.stringify(state));return true;
@@ -511,7 +525,7 @@ async function persistPublishedAllocation(){
   if(!adminVerified)return false;
   const bid=await ensureBroadcast();if(!bid)return false;
   // Persist attendance first so the published daily record is complete.
-  const attRows=MEMBERS.map(name=>{const a=attendanceFor(name);return {broadcast_id:bid,member_name:name,first_half:a.first,second_half:a.second};});
+  const attRows=MEMBERS.map(name=>{const a=attendanceFor(name);return {broadcast_id:bid,member_name:name,first_half:a.first,second_half:a.second,second_half_markets:state.secondHalfMarkets[name]||[]};});
   let q=await sb.from("attendance").upsert(attRows,{onConflict:"broadcast_id,member_name"});
   if(q.error){toast("Could not save attendance: "+q.error.message);return false;}
   const {data:master,error:me}=await sb.from("master_stations").select("id,member_name,city,station,network");
@@ -535,24 +549,23 @@ async function persistPublishedAllocation(){
   if(pub.error){toast("Publish flag update failed: "+pub.error.message);return false;}
   state.broadcastId=bid;state.published=true;localStorage.setItem(KEY,JSON.stringify(state));return true;
 }
-async function loadMemberDataForSelectedName(){
+async function loadMemberDataForSelectedName(dateOverride=null){
   const member=document.getElementById("memberAccessSelect")?.value;
   if(!member)return;
-  // Members may open the shared site on a new device with no local date.
-  // Passing null asks the public RPC for the latest published broadcast.
-  const requestedDate=state.date||null;
-  const names=member==="__ALL__"?MEMBERS:[member];
-  const combined=[];let broadcast=null;
-  for(const name of names){
-    const {data,error}=await sb.rpc("ews_member_data",{p_member_name:name,p_broadcast_date:requestedDate});
-    if(error){toast("Could not load assignments: "+error.message);return;}
-    if(data?.broadcast)broadcast=data.broadcast;
-    (data?.allocations||[]).forEach(x=>combined.push({id:x.id,stationId:x.station_id,assigned:x.assigned_member,owner:x.owner,member:x.owner,city:x.city,station:x.station,network:x.network,timeZone:x.time_zone,half:x.half,status:x.status||"Pending"}));
-  }
-  if(!broadcast){state.allocations=[];state.published=false;state.day="";render();toast("No published allocation for this date.");return;}
+  // Never trust this device's saved date for shared member access.
+  // Name selection loads the latest published broadcast; a date picker change
+  // may pass an explicit date.
+  const requestedDate=dateOverride||null;
+  const {data,error}=await sb.rpc("ews_member_data",{p_member_name:member,p_broadcast_date:requestedDate});
+  if(error){toast("Could not load assignments: "+error.message);return;}
+  const broadcast=data?.broadcast||null;
+  const combined=(data?.allocations||[]).map(x=>({id:x.id,stationId:x.station_id,assigned:x.assigned_member,owner:x.owner,member:x.owner,city:x.city,station:x.station,network:x.network,timeZone:x.time_zone,half:x.half,status:x.status||"Pending"}));
+  if(!broadcast){state.allocations=[];state.published=false;state.day="";render();toast("No published allocation found. Ask the admin to publish the broadcast.");return;}
   state.date=broadcast.broadcast_date||state.date;
   state.broadcastId=broadcast.id||state.broadcastId;
-  state.day=broadcast.broadcast_day||"";state.published=true;state.allocations=combined;
+  state.day=broadcast.broadcast_day||"";
+  state.published=true;
+  state.allocations=combined;
   render();
 }
 async function refreshMemberStatus(allocationId,member,status){
