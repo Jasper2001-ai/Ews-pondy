@@ -300,17 +300,17 @@ function renderAllocation(){
   const memberSelect=document.getElementById("memberAccessSelect");
   if(memberSelect){
     const old=memberSelect.value;
-    memberSelect.innerHTML='<option value="">Select member to view/update their stations</option>'+MEMBERS.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join("");
-    memberSelect.value=MEMBERS.includes(old)?old:"";
+    memberSelect.innerHTML='<option value="">Select member to view/update their stations</option><option value="__ALL__">All members — view assignments</option>'+MEMBERS.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join("");
+    memberSelect.value=(old==="__ALL__"||MEMBERS.includes(old))?old:"";
     memberSelect.onchange=async()=>{if(admin){renderAllocation();return}await loadMemberDataForSelectedName();};
   }
   const selected=memberSelect?memberSelect.value:"";
   const sortMode=state.assigneeSort||"az";
-  const visible=(selected?state.allocations.filter(a=>a.assigned===selected):state.allocations).slice();
+  const visible=(selected&&selected!=="__ALL__"?state.allocations.filter(a=>a.assigned===selected):state.allocations).slice();
   let previousAssignee="",previousMarket="";
   document.getElementById("allocationBody").innerHTML=visible.length?visible.map(a=>{
     const status=a.status||"Pending";
-    const canUpdate=admin||(state.published&&selected&&selected===a.assigned);
+    const canUpdate=admin||(state.published&&selected&&(selected==="__ALL__"||selected===a.assigned));
     const groupStart=previousAssignee!==a.assigned;
     const marketStart=groupStart||previousMarket!==String(a.city||"");
     previousAssignee=a.assigned;previousMarket=String(a.city||"");
@@ -334,9 +334,9 @@ function renderAllocation(){
   document.querySelectorAll("[data-status]").forEach(sel=>sel.onchange=async()=>{
     const a=state.allocations.find(x=>String(x.id)===sel.dataset.status);
     if(!a)return;
-    if(!admin&&(!state.published||!selected||selected!==a.assigned)){toast("You can update only your published assignments.");return}
+    if(!admin&&(!state.published||!selected||(selected!=="__ALL__"&&selected!==a.assigned))){toast("Select your name or All members to view assignments.");return}
     const previous=a.status;a.status=sel.value;
-    if(!admin){const member=document.getElementById("memberAccessSelect")?.value;const ok=await refreshMemberStatus(a.id,member,a.status);if(!ok){a.status=previous;renderAllocation();return;}}
+    if(!admin){const selectedMember=document.getElementById("memberAccessSelect")?.value;const member=selectedMember==="__ALL__"?a.assigned:selectedMember;const ok=await refreshMemberStatus(a.id,member,a.status);if(!ok){a.status=previous;renderAllocation();return;}}
     save();
     if(percent(state.allocations)===100&&state.allocations.length)toast("100% completed — Thank you for your support, team!");
   });
@@ -537,12 +537,22 @@ async function persistPublishedAllocation(){
 }
 async function loadMemberDataForSelectedName(){
   const member=document.getElementById("memberAccessSelect")?.value;
-  if(!member||!state.date)return;
-  const {data,error}=await sb.rpc("ews_member_data",{p_member_name:member,p_broadcast_date:state.date});
-  if(error){toast("Could not load member assignments: "+error.message);return;}
-  const b=data?.broadcast;
-  if(!b){state.allocations=[];state.published=false;state.day="";render();toast("No published allocation for this date.");return;}
-  state.day=b.broadcast_day||"";state.published=true;state.allocations=(data.allocations||[]).map(x=>({id:x.id,stationId:x.station_id,assigned:x.assigned_member,owner:x.owner,member:x.owner,city:x.city,station:x.station,network:x.network,timeZone:x.time_zone,half:x.half,status:x.status||"Pending"}));
+  if(!member)return;
+  // Members may open the shared site on a new device with no local date.
+  // Passing null asks the public RPC for the latest published broadcast.
+  const requestedDate=state.date||null;
+  const names=member==="__ALL__"?MEMBERS:[member];
+  const combined=[];let broadcast=null;
+  for(const name of names){
+    const {data,error}=await sb.rpc("ews_member_data",{p_member_name:name,p_broadcast_date:requestedDate});
+    if(error){toast("Could not load assignments: "+error.message);return;}
+    if(data?.broadcast)broadcast=data.broadcast;
+    (data?.allocations||[]).forEach(x=>combined.push({id:x.id,stationId:x.station_id,assigned:x.assigned_member,owner:x.owner,member:x.owner,city:x.city,station:x.station,network:x.network,timeZone:x.time_zone,half:x.half,status:x.status||"Pending"}));
+  }
+  if(!broadcast){state.allocations=[];state.published=false;state.day="";render();toast("No published allocation for this date.");return;}
+  state.date=broadcast.broadcast_date||state.date;
+  state.broadcastId=broadcast.id||state.broadcastId;
+  state.day=broadcast.broadcast_day||"";state.published=true;state.allocations=combined;
   render();
 }
 async function refreshMemberStatus(allocationId,member,status){
