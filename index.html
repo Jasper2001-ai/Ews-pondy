@@ -25,8 +25,8 @@ button,input,select,textarea{font:inherit}button{cursor:pointer;border:0;border-
     <button class="active" data-page="overview"><span>▦</span> Overview</button>
     <button data-page="attendance"><span>◷</span> Attendance</button>
     <button data-page="allocations"><span>⇄</span> Allocations</button>
-    <button data-page="stations"><span>▤</span> Master stations</button>
-    <button data-page="team"><span>♙</span> Team</button>
+    <button class="admin-nav" data-page="stations"><span>▤</span> Master stations</button>
+    <button class="admin-nav" data-page="team"><span>♙</span> Team</button>
   </nav>
   <div class="sidefoot">24-member broadcast team<br>Secure team workspace</div>
 </aside>
@@ -157,7 +157,7 @@ document.getElementById("footerProgress").textContent=aa.length&&done===aa.lengt
 document.getElementById("halfChart").innerHTML=chartOverall(aa);
 renderAttendance();renderAllocation();renderStations();renderTeam();renderTeamStatus();
 document.querySelectorAll(".admin-only").forEach(x=>x.classList.toggle("hide",!admin));
-
+document.querySelectorAll(".admin-nav").forEach(x=>x.classList.toggle("hide",!admin));
 const teamStatusCard=document.getElementById("teamStatus")?.closest(".card");
 if(teamStatusCard)teamStatusCard.classList.remove("hide");
 document.getElementById("adminBtn").textContent=supabaseUser?"Sign out":"Sign in";
@@ -343,7 +343,7 @@ function renderAllocation(){
       <td>${esc(a.owner)}</td>
       <td><span class="pill blue">${halfName(a.half)}</span></td>
       <td><span class="pill ${status==="Completed"?"green":status==="In Progress"?"blue":"amber"}">${status}</span></td>
-      <td><select data-status="${esc(a.id)}"><option ${status==="Pending"?"selected":""}>Pending</option><option ${status==="In Progress"?"selected":""}>In Progress</option><option ${status==="Completed"?"selected":""}>Completed</option></select></td>
+      <td>${canUpdate?`<select data-status="${esc(a.id)}"><option ${status==="Pending"?"selected":""}>Pending</option><option ${status==="In Progress"?"selected":""}>In Progress</option><option ${status==="Completed"?"selected":""}>Completed</option></select>`:"<span class='small muted'>View only</span>"}</td>
     </tr>`;
   }).join(""):'<tr><td colspan="9" class="empty">No absent-member stations assigned to this member yet.</td></tr>';
   document.querySelectorAll("[data-move-name]").forEach(btn=>btn.onclick=()=>moveAssignee(btn.dataset.moveName,Number(btn.dataset.direction)));
@@ -354,14 +354,11 @@ function renderAllocation(){
   document.querySelectorAll("[data-status]").forEach(sel=>sel.onchange=async()=>{
     const a=state.allocations.find(x=>String(x.id)===sel.dataset.status);
     if(!a)return;
-    const previous=a.status;const next=sel.value;
-    sel.disabled=true;
-    const ok=admin?await updateAdminAllocationStatus(a.id,next):await updatePublicAllocationStatus(a.id,next);
-    sel.disabled=false;
-    if(!ok){a.status=previous;renderAllocation();return;}
-    a.status=next;save();
+    if(!admin){toast("Only the administrator can change station status.");renderAllocation();return}
+    const previous=a.status;a.status=sel.value;
+    if(!admin){const ok=await refreshMemberStatus(a.id,a.status);if(!ok){a.status=previous;renderAllocation();return;}}
+    save();
     if(percent(state.allocations)===100&&state.allocations.length)toast("100% completed — Thank you for your support, team!");
-    else toast("Station status updated for everyone.");
   });
 }
 function renderStations(){let q=(document.getElementById("stationSearch").value||"").toLowerCase();let list=state.stations.filter(s=>[s.member,s.city,s.station,s.network].join(" ").toLowerCase().includes(q));document.getElementById("stationBody").innerHTML=list.length?list.map((s)=>{let i=state.stations.indexOf(s);return `<tr><td>${esc(s.member)}</td><td>${esc(s.city)}</td><td><span class="pill blue">${marketTimeZone(s.city)}</span></td><td><b>${esc(s.station)}</b></td><td>${esc(s.network||"—")}</td><td><div class="table-actions"><button class="ghost admin-only" data-edit="${i}">Edit</button><button class="danger admin-only" data-del="${i}">Delete</button></div></td></tr>`}).join(""):'<tr><td colspan="6" class="empty">No master stations loaded. Import your station CSV to begin.</td></tr>';document.querySelectorAll("[data-edit]").forEach(b=>b.onclick=()=>stationModal(+b.dataset.edit));document.querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>{if(confirm("Delete this master station?")){state.stations.splice(+b.dataset.del,1);save()}});document.querySelectorAll("#stationBody .admin-only").forEach(x=>x.classList.toggle("hide",!admin))}
@@ -585,7 +582,6 @@ async function loadPublicDashboard(){
     const payload=data||{};
     publicMode=true;admin=false;adminVerified=false;currentMember=null;supabaseUser=null;
     stationCount=Number(payload.station_count||0);
-    state.stations=(payload.stations||[]).map(x=>({id:x.id,member:canonicalMember(x.member_name),city:x.city||"",station:x.station||"",network:x.network||"",timeZone:x.time_zone||""}));
     const b=payload.broadcast||null;
     state.attendance={};state.secondHalfMarkets={};state.allocations=[];
     if(!b){state.date="";state.day="";state.broadcastId=null;state.published=false;}
@@ -614,12 +610,7 @@ async function resolveAuthenticatedUser(user){
   currentMember=canonicalMember(memberName);admin=false;adminVerified=false;
   return await loadMemberDataForAuth();
 }
-async function updatePublicAllocationStatus(allocationId,status){
-  const {data,error}=await sb.rpc("ews_public_update_allocation_status",{p_allocation_id:Number(allocationId),p_status:status});
-  if(error||data!==true){toast("Status update failed: "+(error?.message||"The update was not accepted."));return false;}
-  return true;
-}
-async function updateAdminAllocationStatus(allocationId,status){
+async function refreshMemberStatus(allocationId,status){
   const {error}=await sb.from("allocations").update({status}).eq("id",Number(allocationId));
   if(error){toast("Status update failed: "+error.message);return false;}
   return true;
