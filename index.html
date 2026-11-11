@@ -119,13 +119,18 @@ button,input,select,textarea{font:inherit}button{cursor:pointer;border:0;border-
 <div class="modal-back" id="modalBack"><div class="modal" id="modal"></div></div>
 <div class="toast" id="toast"></div>
 <input type="file" id="csvFile" accept=".csv,text/csv" class="hide">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
+const SUPABASE_URL="https://mcgwzwpxmrxfgyurubgj.supabase.co";
+const SUPABASE_PUBLISHABLE_KEY="sb_publishable_PD3_4XIlIKFgHeeuyP9o6w_9CNo3aUz";
+const sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY);
+let supabaseUser=null, adminVerified=false, syncBusy=false;
 const MEMBERS=["Ajith Earnest J","Albert Benjamin P","Amirthan M","Balaji","Bhuvaneshwaran V","Devendiran","Gopinath S","Gowtham S","Gurou C","Hariprasad P","Jasffar S","Joison S","Kaushik S","Madhielavenil M","Raguraj S","Raji M","Sanjay S","Santhosh A","Sathish P","Suriya Arul","Tamil S","Udhaya A","Uthrapathi S","Vijay"];
 const MEMBER_ALIASES={"Devindiran K":"Devendiran","Devindiran":"Devendiran","Vijay J":"Vijay","Ajith":"Ajith Earnest J","Ajith Earnest J":"Ajith Earnest J"};
 function canonicalMember(name){const n=String(name||"").trim();return MEMBER_ALIASES[n]||n;}
 const KEY="broadcastops_v1";
 let state=loadState(),admin=false,currentPage="overview";
-function loadState(){try{const x=JSON.parse(localStorage.getItem(KEY));if(x){x.stations=(x.stations||[]).map(s=>({...s,member:canonicalMember(s.member)}));const oldAttendance=x.attendance||{};x.attendance={};Object.entries(oldAttendance).forEach(([n,v])=>x.attendance[canonicalMember(n)]=v);x.secondHalfMarkets=x.secondHalfMarkets||{};x.assigneeSort=x.assigneeSort||"az";x.assigneeManualOrder=Array.isArray(x.assigneeManualOrder)?x.assigneeManualOrder:[];return x}}catch(e){}return {stations:[],date:"",day:"",attendance:{},secondHalfMarkets:{},allocations:[],published:false,completed:[],assigneeSort:"az",assigneeManualOrder:[],adminPin:"2468"}}
+function loadState(){try{const x=JSON.parse(localStorage.getItem(KEY));if(x){x.stations=(x.stations||[]).map(s=>({...s,member:canonicalMember(s.member)}));const oldAttendance=x.attendance||{};x.attendance={};Object.entries(oldAttendance).forEach(([n,v])=>x.attendance[canonicalMember(n)]=v);x.secondHalfMarkets=x.secondHalfMarkets||{};x.assigneeSort=x.assigneeSort||"az";x.assigneeManualOrder=Array.isArray(x.assigneeManualOrder)?x.assigneeManualOrder:[];return x}}catch(e){}return {stations:[],date:"",day:"",attendance:{},secondHalfMarkets:{},allocations:[],published:false,completed:[],assigneeSort:"az",assigneeManualOrder:[]}}
 function save(){localStorage.setItem(KEY,JSON.stringify(state));render()}
 function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function toast(s){const t=document.getElementById("toast");t.textContent=s;t.classList.add("show");setTimeout(()=>t.classList.remove("show"),2500)}
@@ -139,7 +144,7 @@ function showPage(p){currentPage=p;document.querySelectorAll(".page").forEach(x=
 document.querySelectorAll(".nav button").forEach(b=>b.onclick=()=>showPage(b.dataset.page));
 function render(){document.getElementById("dateLabel").textContent=state.date?(state.date+" · "+(state.day||"Broadcast day not entered")):"Enter a broadcast date to begin.";
 document.getElementById("broadcastDate").value=state.date;document.getElementById("broadcastDay").value=state.day;
-document.getElementById("broadcastDate").disabled=!admin;document.getElementById("broadcastDay").disabled=!admin;document.getElementById("saveDate").classList.toggle("hide",!admin);
+document.getElementById("broadcastDate").disabled=false;document.getElementById("broadcastDay").disabled=!admin;document.getElementById("saveDate").classList.toggle("hide",!admin);
 document.getElementById("statMembers").textContent=MEMBERS.length;document.getElementById("statStations").textContent=state.stations.length;
 const aa=assignments(),done=aa.filter(a=>(a.status||"Pending")==="Completed").length,allpct=percent(aa);
 document.getElementById("statAssigned").textContent=aa.length;document.getElementById("statDone").textContent=done;
@@ -238,7 +243,7 @@ function allocationBlocks(){
   return blocks;
 }
 function applyAssigneeNameOrder(mode){
-  if(!admin){toast("Only admin can change allocation names.");return}
+  if(!adminVerified){toast("Admin sign-in required.");return}
   const blocks=allocationBlocks();
   const names=[...new Set(blocks.map(b=>b.name))].sort((a,b)=>String(a).localeCompare(String(b)));
   if(blocks.length!==names.length){toast("Please review the allocation blocks before sorting names.");return}
@@ -297,7 +302,7 @@ function renderAllocation(){
     const old=memberSelect.value;
     memberSelect.innerHTML='<option value="">Select member to view/update their stations</option>'+MEMBERS.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join("");
     memberSelect.value=MEMBERS.includes(old)?old:"";
-    memberSelect.onchange=()=>renderAllocation();
+    memberSelect.onchange=async()=>{if(admin){renderAllocation();return}await loadMemberDataForSelectedName();};
   }
   const selected=memberSelect?memberSelect.value:"";
   const sortMode=state.assigneeSort||"az";
@@ -326,11 +331,13 @@ function renderAllocation(){
     const from=sel.dataset.reassignFrom,to=sel.value;
     if(to)reassignMemberBlock(from,to);
   });
-  document.querySelectorAll("[data-status]").forEach(sel=>sel.onchange=()=>{
+  document.querySelectorAll("[data-status]").forEach(sel=>sel.onchange=async()=>{
     const a=state.allocations.find(x=>String(x.id)===sel.dataset.status);
     if(!a)return;
     if(!admin&&(!state.published||!selected||selected!==a.assigned)){toast("You can update only your published assignments.");return}
-    a.status=sel.value;save();
+    const previous=a.status;a.status=sel.value;
+    if(!admin){const member=document.getElementById("memberAccessSelect")?.value;const ok=await refreshMemberStatus(a.id,member,a.status);if(!ok){a.status=previous;renderAllocation();return;}}
+    save();
     if(percent(state.allocations)===100&&state.allocations.length)toast("100% completed — Thank you for your support, team!");
   });
 }
@@ -419,23 +426,141 @@ function runAllocation(){
  toast(`Draft generated: ${result.length} station assignments distributed in balanced consecutive blocks across the combined absent-station pools.`);
  if(unassigned.length)alert(`${unassigned.length} stations could not be assigned because no eligible member was available for that period.`);
 }
-function publish(){if(!state.allocations.length){toast("Generate an allocation first.");return}let keys=state.allocations.map(a=>[a.owner,a.city,a.station,a.half,a.assigned].join("|"));if(new Set(keys).size!==keys.length){toast("Duplicate assignment detected. Review before publishing.");return}state.allocations.forEach(a=>{if(!a.status)a.status="Pending"});state.published=true;save();toast("Allocation published. Members can now update their own station status.")}
-function stationModal(index=-1){if(!admin)return;let s=index>=0?state.stations[index]:{member:MEMBERS[0],city:"",station:"",network:""};openModal(`<h2>${index>=0?"Edit station":"Add master station"}</h2><p class="muted small">Add one station to the permanent master register.</p><div class="field"><label>Owner member</label><select id="mMember">${MEMBERS.map(n=>`<option ${s.member===n?"selected":""}>${esc(n)}</option>`).join("")}</select></div><div class="field"><label>Market / city</label><input id="mCity" value="${esc(s.city)}" placeholder="e.g. Dallas"></div><div class="field"><label>Station call sign</label><input id="mStation" value="${esc(s.station)}" placeholder="e.g. KDFW"></div><div class="field"><label>Network (required)</label><input id="mNetwork" value="${esc(s.network||"")}" placeholder="e.g. NBC, CBS, ABC, FOX" required></div><div class="modalfoot"><button class="ghost" onclick="closeModal()">Cancel</button><button class="primary" id="saveStation">Save station</button></div>`);document.getElementById("saveStation").onclick=()=>{let v={member:document.getElementById("mMember").value,city:document.getElementById("mCity").value.trim(),station:document.getElementById("mStation").value.trim(),network:document.getElementById("mNetwork").value.trim()};if(!v.city||!v.station||!v.network){toast("Enter the market, station call sign and network.");return}if(index>=0)state.stations[index]=v;else state.stations.push(v);closeModal();save();toast("Master station saved.")}}
+async function publish(){if(!adminVerified){toast("Admin sign-in required.");return}if(!state.allocations.length){toast("Generate an allocation first.");return}let keys=state.allocations.map(a=>[a.owner,a.city,a.station,a.half,a.assigned].join("|"));if(new Set(keys).size!==keys.length){toast("Duplicate assignment detected. Review before publishing.");return}state.allocations.forEach(a=>{if(!a.status)a.status="Pending"});const ok=await persistPublishedAllocation();if(!ok)return;state.published=true;save();toast("Allocation published to Supabase. Members can now load it on their devices.")}
+function stationModal(index=-1){if(!adminVerified)return;let s=index>=0?state.stations[index]:{member:MEMBERS[0],city:"",station:"",network:""};openModal(`<h2>${index>=0?"Edit station":"Add master station"}</h2><p class="muted small">Add one station to the permanent master register.</p><div class="field"><label>Owner member</label><select id="mMember">${MEMBERS.map(n=>`<option ${s.member===n?"selected":""}>${esc(n)}</option>`).join("")}</select></div><div class="field"><label>Market / city</label><input id="mCity" value="${esc(s.city)}" placeholder="e.g. Dallas"></div><div class="field"><label>Station call sign</label><input id="mStation" value="${esc(s.station)}" placeholder="e.g. KDFW"></div><div class="field"><label>Network (required)</label><input id="mNetwork" value="${esc(s.network||"")}" placeholder="e.g. NBC, CBS, ABC, FOX" required></div><div class="modalfoot"><button class="ghost" onclick="closeModal()">Cancel</button><button class="primary" id="saveStation">Save station</button></div>`);document.getElementById("saveStation").onclick=()=>{let v={member:document.getElementById("mMember").value,city:document.getElementById("mCity").value.trim(),station:document.getElementById("mStation").value.trim(),network:document.getElementById("mNetwork").value.trim()};if(!v.city||!v.station||!v.network){toast("Enter the market, station call sign and network.");return}if(index>=0)state.stations[index]=v;else state.stations.push(v);closeModal();save();toast("Master station saved.")}}
 function openModal(content){document.getElementById("modal").innerHTML=content;document.getElementById("modalBack").classList.add("show")}function closeModal(){document.getElementById("modalBack").classList.remove("show")}document.getElementById("modalBack").onclick=e=>{if(e.target.id==="modalBack")closeModal()};
-document.getElementById("saveDate").onclick=()=>{if(!admin){toast("Only admin can set the broadcast date and day.");return}state.date=document.getElementById("broadcastDate").value;state.day=document.getElementById("broadcastDay").value.trim();state.published=false;save();toast("Broadcast details saved.")};
-document.getElementById("saveAttendance").onclick=()=>{save();toast("Attendance saved.")};
-document.getElementById("runAllocation").onclick=()=>{if(!admin){toast("Enable admin mode first.");return}if(confirm("Generate a new draft? This replaces the current daily draft and clears its completion marks."))runAllocation()};
-document.getElementById("publishAllocation").onclick=()=>{if(!admin){toast("Enable admin mode first.");return}publish()};
+document.getElementById("saveDate").onclick=async()=>{if(!adminVerified){toast("Admin sign-in required.");return}state.date=document.getElementById("broadcastDate").value;state.day=document.getElementById("broadcastDay").value.trim();state.published=false;save();const ok=await saveBroadcastAndAttendance();if(ok)toast("Broadcast details saved to Supabase.")};
+document.getElementById("saveAttendance").onclick=async()=>{if(!adminVerified){toast("Admin sign-in required.");return}const ok=await saveBroadcastAndAttendance();if(ok)toast("Attendance saved to Supabase.")};
+document.getElementById("broadcastDate").addEventListener("change",async e=>{if(!admin){state.date=e.target.value;await loadMemberDataForSelectedName();}});
+document.getElementById("runAllocation").onclick=()=>{if(!adminVerified){toast("Sign in as admin first.");return}if(confirm("Generate a new draft? This replaces the current daily draft and clears its completion marks."))runAllocation()};
+document.getElementById("publishAllocation").onclick=()=>{if(!adminVerified){toast("Sign in as admin first.");return}publish()};
 document.getElementById("addStationBtn").onclick=()=>stationModal();
 document.getElementById("importBtn").onclick=()=>document.getElementById("csvFile").click();
 document.getElementById("csvFile").onchange=async e=>{let f=e.target.files[0];if(!f)return;let raw=await f.text();function parseCSV(src){let rows=[],row=[],cell="",quoted=false;for(let i=0;i<src.length;i++){const c=src[i],next=src[i+1];if(c==='"'&&quoted&&next==='"'){cell+='"';i++;}else if(c==='"'){quoted=!quoted;}else if(c===','&&!quoted){row.push(cell.trim());cell="";}else if((c==='\n'||c==='\r')&&!quoted){if(c==='\r'&&next==='\n')i++;row.push(cell.trim());if(row.some(v=>v!==""))rows.push(row);row=[];cell="";}else cell+=c;}if(cell!==""||row.length){row.push(cell.trim());rows.push(row);}return rows;}let matrix=parseCSV(raw.replace(/^\\uFEFF/,""));const norm=x=>String(x||"").toLowerCase().replace(/[^a-z0-9]/g,"");let head=(matrix.shift()||[]).map(norm);let ix=(...names)=>{for(const n of names){const j=head.indexOf(norm(n));if(j>=0)return j;}return -1};const iMember=ix("member","editor_name","editorname","owner"),iCity=ix("city","market","market_name","marketname"),iState=ix("state","state_code","statecode"),iStation=ix("station","station_name","stationname","call_sign","callsign"),iNetwork=ix("network","network_name","networkname","affiliation");if(iMember<0||iCity<0||iStation<0||iNetwork<0){toast("CSV must contain Member/Editor_Name, Market_Name, Station_Name and Network columns.");return}let rows=matrix.map(a=>normalizeMarketRecord({member:canonicalMember(a[iMember]),city:a[iCity],stateCode:iState>=0?a[iState]||"": "",timeZone:"",station:a[iStation],network:a[iNetwork]})).filter(x=>MEMBERS.includes(x.member)&&x.city&&x.station&&x.network);if(!rows.length){toast("No valid rows found. Check member names, station and required network column.");return}if(confirm(`Import ${rows.length} station records? Duplicate name variations will be grouped under one member. This replaces the current master station list.`)){state.stations=rows;state.allocations=[];state.completed=[];state.published=false;save();toast(rows.length+" station records imported and member names grouped.")}e.target.value=""};
 document.getElementById("stationSearch").oninput=renderStations;
 document.getElementById("exportBtn").onclick=()=>{let rows=[["Assigned member","City","State","Station","Network","Original owner","Half","Status"],...state.allocations.map(a=>[a.assigned,a.city,a.stateCode||"",a.station,a.network,a.owner,halfName(a.half),(a.status||"Pending")])];if(rows.length===1){toast("No allocation to export.");return}let csv=rows.map(r=>r.map(x=>'"'+String(x??"").replace(/"/g,'""')+'"').join(",")).join("\n");let blob=new Blob([csv],{type:"text/csv"}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=`broadcast-${state.date||"allocation"}.csv`;a.click();URL.revokeObjectURL(url)};
-document.getElementById("assigneeSort").onchange=e=>{if(!admin){toast("Only admin can change allocation names.");return}const mode=e.target.value;if(mode==="manual"){state.assigneeSort="manual";save();return}applyAssigneeNameOrder(mode)};
-document.getElementById("adminBtn").onclick=()=>{if(admin){admin=false;render();toast("Admin mode disabled.");return}openModal(`<h2>Admin access</h2><p class="muted small">Enter the local admin PIN to edit attendance and allocations.</p><div class="field"><label>Admin PIN</label><input id="pinInput" type="password" inputmode="numeric" placeholder="Enter PIN"></div><div class="notice">Admin access is restricted to the authorized administrator. This local demo PIN is not secure authentication.</div><div class="modalfoot"><button class="ghost" onclick="closeModal()">Cancel</button><button class="primary" id="unlock">Unlock admin</button></div>`);document.getElementById("unlock").onclick=()=>{if(document.getElementById("pinInput").value===state.adminPin){admin=true;closeModal();render();toast("Admin mode enabled.")}else toast("Incorrect PIN.")}};
+document.getElementById("assigneeSort").onchange=e=>{if(!adminVerified){toast("Admin sign-in required.");return}const mode=e.target.value;if(mode==="manual"){state.assigneeSort="manual";save();return}applyAssigneeNameOrder(mode)};
+document.getElementById("adminBtn").onclick=async()=>{
+  if(admin){
+    await sb.auth.signOut();admin=false;adminVerified=false;supabaseUser=null;
+    state.allocations=[];state.attendance={};state.published=false;render();
+    toast("Admin signed out. Members can still view published assignments.");return;
+  }
+  openModal(`<h2>Admin sign in</h2><p class="muted small">Sign in with your authorized Supabase administrator email and password.</p>
+    <div class="field"><label>Email address</label><input id="adminEmail" type="email" autocomplete="username" placeholder="Admin email"></div>
+    <div class="field"><label>Password</label><input id="adminPassword" type="password" autocomplete="current-password" placeholder="Supabase password"></div>
+    <div class="modalfoot"><button class="ghost" onclick="closeModal()">Cancel</button><button class="primary" id="adminLogin">Sign in</button></div>`);
+  document.getElementById("adminLogin").onclick=async()=>{
+    const email=document.getElementById("adminEmail").value.trim(),password=document.getElementById("adminPassword").value;
+    if(!email||!password){toast("Enter your admin email and password.");return;}
+    const btn=document.getElementById("adminLogin");btn.disabled=true;btn.textContent="Signing in…";
+    const {data,error}=await sb.auth.signInWithPassword({email,password});
+    if(error){btn.disabled=false;btn.textContent="Sign in";toast("Sign-in failed: "+error.message);return;}
+    const {data:roleData,error:roleError}=await sb.rpc("is_admin");
+    if(roleError||roleData!==true){
+      await sb.auth.signOut();btn.disabled=false;btn.textContent="Sign in";
+      toast("This account does not have the admin role.");return;
+    }
+    admin=true;adminVerified=true;supabaseUser=data.user;closeModal();
+    const ok=await loadAdminData();
+    if(ok){render();toast("Admin signed in and Supabase data loaded.");}
+    else {admin=false;adminVerified=false;await sb.auth.signOut();render();}
+  };
+};
+document.getElementById("adminBtn").title="Supabase administrator sign in";
 document.getElementById("adminBtn").addEventListener("contextmenu",e=>e.preventDefault());
 document.getElementById("adminBtn").title="Local demo admin access";
 document.getElementById("overview").addEventListener("dblclick",()=>{});
+
+// ---------- Supabase shared-data integration ----------
+async function loadAdminData(){
+  try{
+    const {data:stations,error:se}=await sb.from("master_stations").select("*").order("id");
+    if(se)throw se;
+    state.stations=(stations||[]).map(x=>({id:x.id,member:canonicalMember(x.member_name),city:x.city,station:x.station,network:x.network,timeZone:x.time_zone||""}));
+    const {data:brows,error:be}=await sb.from("broadcasts").select("*").order("broadcast_date",{ascending:false}).limit(1);
+    if(be)throw be;
+    if(brows&&brows.length){
+      const b=brows[0];state.date=b.broadcast_date;state.day=b.broadcast_day||"";
+      state.broadcastId=b.id;state.published=!!b.published;
+      const {data:att,error:ae}=await sb.from("attendance").select("*").eq("broadcast_id",b.id);
+      if(ae)throw ae;
+      state.attendance={};(att||[]).forEach(x=>state.attendance[canonicalMember(x.member_name)]={first:x.first_half,second:x.second_half});
+      const {data:alloc,error:al}=await sb.from("allocations").select("id,broadcast_id,station_id,assigned_member,half,status,master_stations(id,member_name,city,station,network,time_zone)").eq("broadcast_id",b.id).order("id");
+      if(al)throw al;
+      state.allocations=(alloc||[]).map(x=>({id:x.id,stationId:x.station_id,assigned:canonicalMember(x.assigned_member),owner:canonicalMember(x.master_stations?.member_name),member:canonicalMember(x.master_stations?.member_name),city:x.master_stations?.city||"",station:x.master_stations?.station||"",network:x.master_stations?.network||"",timeZone:x.master_stations?.time_zone||"",half:x.half,status:x.status||"Pending"}));
+    }else{state.date="";state.day="";state.broadcastId=null;state.attendance={};state.allocations=[];state.published=false;}
+    localStorage.setItem(KEY,JSON.stringify(state));return true;
+  }catch(e){toast("Could not load Supabase data: "+(e.message||e));return false;}
+}
+async function ensureBroadcast(){
+  if(!state.date||!state.day){toast("Enter broadcast date and day first.");return null;}
+  const {data,error}=await sb.from("broadcasts").upsert({broadcast_date:state.date,broadcast_day:state.day,published:false},{onConflict:"broadcast_date"}).select().single();
+  if(error){toast("Broadcast save failed: "+error.message);return null;}
+  state.broadcastId=data.id;return data.id;
+}
+async function saveBroadcastAndAttendance(){
+  if(!adminVerified)return false;
+  const bid=await ensureBroadcast();if(!bid)return false;
+  const rows=MEMBERS.map(name=>{const a=attendanceFor(name);return {broadcast_id:bid,member_name:name,first_half:a.first,second_half:a.second};});
+  const {error}=await sb.from("attendance").upsert(rows,{onConflict:"broadcast_id,member_name"});
+  if(error){toast("Attendance save failed: "+error.message);return false;}
+  localStorage.setItem(KEY,JSON.stringify(state));return true;
+}
+async function persistPublishedAllocation(){
+  if(!adminVerified)return false;
+  const bid=await ensureBroadcast();if(!bid)return false;
+  // Persist attendance first so the published daily record is complete.
+  const attRows=MEMBERS.map(name=>{const a=attendanceFor(name);return {broadcast_id:bid,member_name:name,first_half:a.first,second_half:a.second};});
+  let q=await sb.from("attendance").upsert(attRows,{onConflict:"broadcast_id,member_name"});
+  if(q.error){toast("Could not save attendance: "+q.error.message);return false;}
+  const {data:master,error:me}=await sb.from("master_stations").select("id,member_name,city,station,network");
+  if(me){toast("Could not match master stations: "+me.message);return false;}
+  const findStation=a=>(master||[]).find(m=>canonicalMember(m.member_name)===canonicalMember(a.owner||a.member)&&m.city===a.city&&m.station===a.station&&m.network===a.network);
+  const rows=[];
+  for(const a of state.allocations){
+    const m=findStation(a);
+    if(!m){toast("Station not found in Supabase master list: "+a.station+" / "+a.city);return false;}
+    rows.push({broadcast_id:bid,station_id:m.id,assigned_member:a.assigned,half:a.half,status:a.status||"Pending"});
+  }
+  const del=await sb.from("allocations").delete().eq("broadcast_id",bid);
+  if(del.error){toast("Could not replace today's draft: "+del.error.message);return false;}
+  if(rows.length){
+    const ins=await sb.from("allocations").insert(rows).select("id,station_id,assigned_member,half,status");
+    if(ins.error){toast("Allocation insert failed: "+ins.error.message);return false;}
+    const byKey=new Map(ins.data.map(x=>[`${x.station_id}|${x.half}|${x.assigned_member}`,x]));
+    for(const a of state.allocations){const m=findStation(a),x=m&&byKey.get(`${m.id}|${a.half}|${a.assigned}`);if(x){a.id=x.id;a.stationId=x.station_id;}}
+  }
+  const pub=await sb.from("broadcasts").update({published:true}).eq("id",bid);
+  if(pub.error){toast("Publish flag update failed: "+pub.error.message);return false;}
+  state.broadcastId=bid;state.published=true;localStorage.setItem(KEY,JSON.stringify(state));return true;
+}
+async function loadMemberDataForSelectedName(){
+  const member=document.getElementById("memberAccessSelect")?.value;
+  if(!member||!state.date)return;
+  const {data,error}=await sb.rpc("ews_member_data",{p_member_name:member,p_broadcast_date:state.date});
+  if(error){toast("Could not load member assignments: "+error.message);return;}
+  const b=data?.broadcast;
+  if(!b){state.allocations=[];state.published=false;state.day="";render();toast("No published allocation for this date.");return;}
+  state.day=b.broadcast_day||"";state.published=true;state.allocations=(data.allocations||[]).map(x=>({id:x.id,stationId:x.station_id,assigned:x.assigned_member,owner:x.owner,member:x.owner,city:x.city,station:x.station,network:x.network,timeZone:x.time_zone,half:x.half,status:x.status||"Pending"}));
+  render();
+}
+async function refreshMemberStatus(allocationId,member,status){
+  const {data,error}=await sb.rpc("ews_member_update_status",{p_member_name:member,p_allocation_id:Number(allocationId),p_status:status});
+  if(error||data!==true){toast("Status update failed: "+(error?.message||"assignment not accepted"));return false;}
+  return true;
+}
+sb.auth.getSession().then(async({data})=>{
+  if(data?.session){
+    const {data:ok,error}=await sb.rpc("is_admin");
+    if(!error&&ok===true){admin=true;adminVerified=true;supabaseUser=data.session.user;await loadAdminData();render();}
+    else {await sb.auth.signOut();}
+  }
+});
+sb.auth.onAuthStateChange((event,session)=>{
+  if(event==="SIGNED_OUT"){admin=false;adminVerified=false;supabaseUser=null;}
+});
+
 render();
 </script>
 </body>
