@@ -43,6 +43,15 @@ button,input,select,textarea{font:inherit}button{cursor:pointer;border:0;border-
     <div class="card stat"><div><div class="label">Stations assigned today</div><div class="num" id="statAssigned">0</div><div class="small muted">Absent-member stations redistributed</div></div><div class="ico">⇄</div></div>
     <div class="card stat"><div><div class="label">Stations completed</div><div class="num" id="statDone">0</div><div class="small muted">Marked complete</div></div><div class="ico">✓</div></div>
   </div>
+  <div class="card" style="margin-bottom:18px">
+    <div class="row"><div><h3 class="section-title">Weekly & monthly performance</h3><div class="small muted">Based on all saved published broadcast history</div></div><span class="pill blue">Historical reports</span></div>
+    <div class="grid stats" style="margin:14px 0 0">
+      <div class="mini"><span class="small muted">This week · broadcasts</span><b id="weekBroadcasts">0</b><span class="small muted" id="weekDone">0 completed stations</span></div>
+      <div class="mini"><span class="small muted">This week · completion</span><b id="weekPct">0%</b><span class="small muted" id="weekAssigned">0 stations assigned</span></div>
+      <div class="mini"><span class="small muted">This month · broadcasts</span><b id="monthBroadcasts">0</b><span class="small muted" id="monthDone">0 completed stations</span></div>
+      <div class="mini"><span class="small muted">This month · completion</span><b id="monthPct">0%</b><span class="small muted" id="monthAssigned">0 stations assigned</span></div>
+    </div>
+  </div>
   <div class="grid dashboard-grid">
     <div class="card">
       <div class="row"><div><h3 class="section-title">Broadcast completion</h3><div class="small muted">Live progress across today's assignments</div></div><span class="pill blue" id="statusPill">Not started</span></div>
@@ -83,7 +92,7 @@ button,input,select,textarea{font:inherit}button{cursor:pointer;border:0;border-
 
 <section class="page" id="allocations">
   <div class="card">
-    <div class="toolbar"><div><h3 class="section-title">Daily station allocation</h3><div class="small muted">Full-day absence redistributes all stations once; first-half absence redistributes half; second-half absence uses admin-selected markets.</div></div><div class="right"><button class="soft admin-only" id="runAllocation">⇄ Generate allocation</button><button class="primary admin-only" id="publishAllocation">Publish allocation</button></div></div>
+    <div class="toolbar"><div><h3 class="section-title">Daily station allocation</h3><div class="small muted">Full-day absence redistributes all stations once; first-half absence redistributes half; second-half absence uses admin-selected markets.</div></div><div class="right"><button class="soft admin-only" id="runAllocation">⇄ Generate allocation</button><button class="ghost admin-only" id="manualAssignBtn">＋ Manual station assignment</button><button class="primary admin-only" id="publishAllocation">Publish allocation</button></div></div>
     <div class="notice"><b>Allocation rule:</b> split stations into equally sized consecutive blocks among eligible members. Do not use members' original station totals, other responsibilities or historical workload as balancing weights. First-half absence takes half of that member’s master station list (19 of 38). For second-half absence, the admin selects the specific markets. Full-day absence redistributes the full station list once. Overloaded members are excluded only for the affected period.</div>
     <div id="allocationSummary" class="small muted" style="margin-bottom:12px">No allocation generated for this broadcast.</div>
     <div class="formgrid" style="margin:12px 0">
@@ -130,7 +139,7 @@ const MEMBER_ALIASES={"Devindiran K":"Devendiran","Devindiran":"Devendiran","Vij
 function canonicalMember(name){const n=String(name||"").trim();return MEMBER_ALIASES[n]||n;}
 const KEY="broadcastops_v1";
 let state=loadState(),admin=false,currentPage="overview";
-function loadState(){try{const x=JSON.parse(localStorage.getItem(KEY));if(x){x.stations=(x.stations||[]).map(s=>({...s,member:canonicalMember(s.member)}));const oldAttendance=x.attendance||{};x.attendance={};Object.entries(oldAttendance).forEach(([n,v])=>x.attendance[canonicalMember(n)]=v);x.secondHalfMarkets=x.secondHalfMarkets||{};x.assigneeSort=x.assigneeSort||"az";x.assigneeManualOrder=Array.isArray(x.assigneeManualOrder)?x.assigneeManualOrder:[];return x}}catch(e){}return {stations:[],date:"",day:"",attendance:{},secondHalfMarkets:{},allocations:[],published:false,completed:[],assigneeSort:"az",assigneeManualOrder:[]}}
+function loadState(){try{const x=JSON.parse(localStorage.getItem(KEY));if(x){x.stations=(x.stations||[]).map(s=>({...s,member:canonicalMember(s.member)}));const oldAttendance=x.attendance||{};x.attendance={};Object.entries(oldAttendance).forEach(([n,v])=>x.attendance[canonicalMember(n)]=v);x.secondHalfMarkets=x.secondHalfMarkets||{};x.assigneeSort=x.assigneeSort||"az";x.history=Array.isArray(x.history)?x.history:[];x.assigneeManualOrder=Array.isArray(x.assigneeManualOrder)?x.assigneeManualOrder:[];return x}}catch(e){}return {stations:[],date:"",day:"",attendance:{},secondHalfMarkets:{},allocations:[],published:false,completed:[],assigneeSort:"az",assigneeManualOrder:[],history:[]}}
 function save(){
   localStorage.setItem(KEY,JSON.stringify(state));
   render();
@@ -157,6 +166,7 @@ async function loadSharedDashboard(){
       state.attendance=state.attendance||{};
       state.secondHalfMarkets=state.secondHalfMarkets||{};
       state.assigneeSort=state.assigneeSort||"az";
+      state.history=Array.isArray(state.history)?state.history:[];
       state.assigneeManualOrder=Array.isArray(state.assigneeManualOrder)?state.assigneeManualOrder:[];
       localStorage.setItem(KEY,JSON.stringify(state));
     }else if(adminVerified){
@@ -218,9 +228,20 @@ const presentCount=MEMBERS.filter(n=>eligible(n,"first")&&eligible(n,"second")).
 document.getElementById("statusPill").textContent=aa.length&&done===aa.length?"Completed":done?"In progress":"Not started";
 document.getElementById("footerProgress").textContent=aa.length&&done===aa.length?"— 100% complete. Thank you for your support, team!":"";
 document.getElementById("halfChart").innerHTML=chartOverall(aa);
+renderHistoricalReports();
 renderAttendance();renderAllocation();renderStations();renderTeam();renderTeamStatus();
 document.querySelectorAll(".admin-only").forEach(x=>x.classList.toggle("hide",!admin));
 document.getElementById("adminBtn").textContent=admin?"✓ Admin enabled":"⚿ Admin mode";
+}
+function renderHistoricalReports(){
+  const history=Array.isArray(state.history)?state.history:[];
+  const now=new Date(), startWeek=new Date(now);startWeek.setHours(0,0,0,0);startWeek.setDate(now.getDate()-((now.getDay()+6)%7));
+  const startMonth=new Date(now.getFullYear(),now.getMonth(),1);
+  const summarize=items=>{const assigned=items.reduce((n,x)=>n+(x.allocations||[]).length,0);const done=items.reduce((n,x)=>n+(x.allocations||[]).filter(a=>a.status==="Completed").length,0);return {broadcasts:items.length,assigned,done,pct:assigned?Math.round(done/assigned*100):0}};
+  const valid=history.filter(x=>x.date&&Array.isArray(x.allocations));
+  const week=summarize(valid.filter(x=>new Date(x.date+"T00:00:00")>=startWeek&&new Date(x.date+"T00:00:00")<=now));
+  const month=summarize(valid.filter(x=>{const d=new Date(x.date+"T00:00:00");return d>=startMonth&&d<=now}));
+  for(const [id,val] of Object.entries({weekBroadcasts:week.broadcasts,weekDone:`${week.done} completed stations`,weekPct:week.pct+"%",weekAssigned:`${week.assigned} stations assigned`,monthBroadcasts:month.broadcasts,monthDone:`${month.done} completed stations`,monthPct:month.pct+"%",monthAssigned:`${month.assigned} stations assigned`}))document.getElementById(id).textContent=val;
 }
 function chartOverall(list){if(!list.length)return '<div class="empty">Generate an allocation to see assignment progress.</div>';const done=list.filter(a=>(a.status||"Pending")==="Completed").length,remaining=list.length-done;return [{label:"Completed",n:done},{label:"Remaining",n:remaining}].map(x=>`<div class="chartcol"><b>${x.n}</b><div class="chartbar" style="height:${Math.max(3,x.n/list.length*100)}%"></div><small>${x.label}</small></div>`).join("")}
 
@@ -378,7 +399,7 @@ function renderAllocation(){
     const marketStart=groupStart||previousMarket!==String(a.city||"");
     previousAssignee=a.assigned;previousMarket=String(a.city||"");
     return `<tr class="${groupStart?"assignee-start":marketStart?"market-start":""}">
-      <td><div class="assignee-cell"><b>${esc(a.assigned)}</b>${admin&&groupStart?`<span class="move-controls">${sortMode==="manual"?`<button type="button" class="move-name" title="Move ${esc(a.assigned)} up" data-move-name="${esc(a.assigned)}" data-direction="-1">↑</button><button type="button" class="move-name" title="Move ${esc(a.assigned)} down" data-move-name="${esc(a.assigned)}" data-direction="1">↓</button>`:""}<select class="reassign-select" aria-label="Swap or replace assignments for ${esc(a.assigned)}" data-reassign-from="${esc(a.assigned)}"><option value="">Swap / replace name…</option>${MEMBERS.filter(n=>n!==a.assigned).map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join("")}</select></span>`:""}</div></td>
+      <td><div class="assignee-cell"><b>${esc(a.assigned)}</b>${admin?`<select class="reassign-select" title="Change this station's assignee" data-one-reassign="${esc(a.id)}"><option value="">Change assignee…</option>${MEMBERS.filter(n=>n!==a.assigned).map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join("")}</select>`:""}${admin&&groupStart?`<span class="move-controls">${sortMode==="manual"?`<button type="button" class="move-name" title="Move ${esc(a.assigned)} up" data-move-name="${esc(a.assigned)}" data-direction="-1">↑</button><button type="button" class="move-name" title="Move ${esc(a.assigned)} down" data-move-name="${esc(a.assigned)}" data-direction="1">↓</button>`:""}<select class="reassign-select" aria-label="Swap or replace assignments for ${esc(a.assigned)}" data-reassign-from="${esc(a.assigned)}"><option value="">Swap / replace name…</option>${MEMBERS.filter(n=>n!==a.assigned).map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join("")}</select></span>`:""}</div></td>
       <td>${esc(a.city||"—")}</td>
       <td><span class="pill blue">${marketTimeZone(a.city)}</span></td>
       <td><b>${esc(a.station)}</b></td>
@@ -390,6 +411,7 @@ function renderAllocation(){
     </tr>`;
   }).join(""):'<tr><td colspan="9" class="empty">No absent-member stations assigned to this member yet.</td></tr>';
   document.querySelectorAll("[data-move-name]").forEach(btn=>btn.onclick=()=>moveAssignee(btn.dataset.moveName,Number(btn.dataset.direction)));
+  document.querySelectorAll("[data-one-reassign]").forEach(sel=>sel.onchange=()=>{const a=state.allocations.find(x=>String(x.id)===sel.dataset.oneReassign);if(!a||!sel.value)return;a.assigned=sel.value;state.published=false;save();toast("Station reassigned. Review and publish the updated allocation.")});
   document.querySelectorAll("[data-reassign-from]").forEach(sel=>sel.onchange=()=>{
     const from=sel.dataset.reassignFrom,to=sel.value;
     if(to)reassignMemberBlock(from,to);
@@ -416,8 +438,9 @@ function renderAllocation(){
         if(data!==true)throw new Error("The update was not accepted. Check the selected member and assignment.");
         a.status=nextStatus;
         localStorage.setItem(KEY,JSON.stringify(state));
+        // Do not clear publication or disable other members' controls after one status update.
         render();
-        toast("Progress updated and shared with the team.");
+        toast("Progress updated and shared with the team. Your other assigned stations remain editable.");
       }catch(e){
         console.error("Progress update failed:",e);
         toast("Progress update failed: "+(e.message||"Try again"));
@@ -512,13 +535,22 @@ function runAllocation(){
  toast(`Draft generated: ${result.length} station assignments distributed in balanced consecutive blocks across the combined absent-station pools.`);
  if(unassigned.length)alert(`${unassigned.length} stations could not be assigned because no eligible member was available for that period.`);
 }
-function publish(){if(!adminVerified){toast("Admin sign-in required.");return}if(!state.allocations.length){toast("Generate an allocation first.");return}let keys=state.allocations.map(a=>[a.owner,a.city,a.station,a.half,a.assigned].join("|"));if(new Set(keys).size!==keys.length){toast("Duplicate assignment detected. Review before publishing.");return}state.allocations.forEach(a=>{if(!a.status)a.status="Pending"});state.published=true;save();toast("Allocation published. Members can now update their own station status.")}
+function openManualAssignment(){
+  if(!adminVerified){toast("Admin sign-in required.");return;}
+  const assignedIds=new Set(state.allocations.map(a=>String(a.masterStationKey||"" )).filter(Boolean));
+  const options=state.stations.map((st,i)=>({st,i})).filter(({st,i})=>!state.allocations.some(a=>a.manualMasterIndex===i&&a.assigned));
+  openModal(`<h2>Manually assign extra stations</h2><p class="muted small">Choose one or more stations from the existing master register and assign them to a team member. This adds assignments without regenerating the current allocation.</p><div class="field"><label>Assign selected stations to</label><select id="manualTarget">${MEMBERS.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join("")}</select></div><div class="field"><label>Filter stations</label><input id="manualFilter" placeholder="Search city, station or owner"></div><div class="checklist" id="manualStationList" style="max-height:42vh;overflow:auto">${options.map(({st,i})=>`<label class="check" data-manual-row="${i}"><input type="checkbox" value="${i}"><span><b>${esc(st.station)}</b> · ${esc(st.city)}<br><span class="muted">Owner: ${esc(st.member)} · ${esc(st.network)}</span></span></label>`).join("")||'<div class="empty">No master stations available.</div>'}</div><div class="modalfoot"><button class="ghost" onclick="closeModal()">Cancel</button><button class="primary" id="applyManualStations">Assign selected stations</button></div>`);
+  document.getElementById("manualFilter").oninput=e=>{const q=e.target.value.toLowerCase();document.querySelectorAll("[data-manual-row]").forEach(el=>el.style.display=el.textContent.toLowerCase().includes(q)?"flex":"none")};
+  document.getElementById("applyManualStations").onclick=()=>{const target=document.getElementById("manualTarget").value;const ids=[...document.querySelectorAll("#manualStationList input:checked")].map(x=>Number(x.value));if(!ids.length){toast("Select at least one station.");return}ids.forEach(i=>{const st=state.stations[i];state.allocations.push({...st,owner:canonicalMember(st.member),assigned:target,half:"manual",status:"Pending",manualMasterIndex:i,id:`manual_${Date.now()}_${i}_${Math.random().toString(36).slice(2,7)}`})});state.published=false;closeModal();save();toast(`${ids.length} station(s) assigned to ${target}. Publish when ready.`)};
+}
+function publish(){if(!adminVerified){toast("Admin sign-in required.");return}if(!state.allocations.length){toast("Generate an allocation first.");return}let keys=state.allocations.map(a=>[a.owner,a.city,a.station,a.half,a.assigned].join("|"));if(new Set(keys).size!==keys.length){toast("Duplicate assignment detected. Review before publishing.");return}state.allocations.forEach(a=>{if(!a.status)a.status="Pending"});state.published=true;state.history=Array.isArray(state.history)?state.history:[];const snapshot={date:state.date||new Date().toISOString().slice(0,10),day:state.day||"",allocations:state.allocations.map(a=>({...a}))};const oldIndex=state.history.findIndex(x=>x.date===snapshot.date);if(oldIndex>=0)state.history[oldIndex]=snapshot;else state.history.push(snapshot);save();toast("Allocation published and broadcast history saved. Members can update their own assignments.")}
 function stationModal(index=-1){if(!admin)return;let s=index>=0?state.stations[index]:{member:MEMBERS[0],city:"",station:"",network:""};openModal(`<h2>${index>=0?"Edit station":"Add master station"}</h2><p class="muted small">Add one station to the permanent master register.</p><div class="field"><label>Owner member</label><select id="mMember">${MEMBERS.map(n=>`<option ${s.member===n?"selected":""}>${esc(n)}</option>`).join("")}</select></div><div class="field"><label>Market / city</label><input id="mCity" value="${esc(s.city)}" placeholder="e.g. Dallas"></div><div class="field"><label>Station call sign</label><input id="mStation" value="${esc(s.station)}" placeholder="e.g. KDFW"></div><div class="field"><label>Network (required)</label><input id="mNetwork" value="${esc(s.network||"")}" placeholder="e.g. NBC, CBS, ABC, FOX" required></div><div class="modalfoot"><button class="ghost" onclick="closeModal()">Cancel</button><button class="primary" id="saveStation">Save station</button></div>`);document.getElementById("saveStation").onclick=()=>{let v={member:document.getElementById("mMember").value,city:document.getElementById("mCity").value.trim(),station:document.getElementById("mStation").value.trim(),network:document.getElementById("mNetwork").value.trim()};if(!v.city||!v.station||!v.network){toast("Enter the market, station call sign and network.");return}if(index>=0)state.stations[index]=v;else state.stations.push(v);closeModal();save();toast("Master station saved.")}}
 function openModal(content){document.getElementById("modal").innerHTML=content;document.getElementById("modalBack").classList.add("show")}function closeModal(){document.getElementById("modalBack").classList.remove("show")}document.getElementById("modalBack").onclick=e=>{if(e.target.id==="modalBack")closeModal()};
 document.getElementById("saveDate").onclick=()=>{if(!admin){toast("Only admin can set the broadcast date and day.");return}state.date=document.getElementById("broadcastDate").value;state.day=document.getElementById("broadcastDay").value.trim();state.published=false;save();toast("Broadcast details saved.")};
 document.getElementById("saveAttendance").onclick=()=>{save();toast("Attendance saved.")};
 document.getElementById("runAllocation").onclick=()=>{if(!admin){toast("Enable admin mode first.");return}if(confirm("Generate a new draft? This replaces the current daily draft and clears its completion marks."))runAllocation()};
 document.getElementById("publishAllocation").onclick=()=>{if(!admin){toast("Enable admin mode first.");return}publish()};
+document.getElementById("manualAssignBtn").onclick=openManualAssignment;
 document.getElementById("addStationBtn").onclick=()=>stationModal();
 document.getElementById("importBtn").onclick=()=>document.getElementById("csvFile").click();
 document.getElementById("csvFile").onchange=async e=>{let f=e.target.files[0];if(!f)return;let raw=await f.text();function parseCSV(src){let rows=[],row=[],cell="",quoted=false;for(let i=0;i<src.length;i++){const c=src[i],next=src[i+1];if(c==='"'&&quoted&&next==='"'){cell+='"';i++;}else if(c==='"'){quoted=!quoted;}else if(c===','&&!quoted){row.push(cell.trim());cell="";}else if((c==='\n'||c==='\r')&&!quoted){if(c==='\r'&&next==='\n')i++;row.push(cell.trim());if(row.some(v=>v!==""))rows.push(row);row=[];cell="";}else cell+=c;}if(cell!==""||row.length){row.push(cell.trim());rows.push(row);}return rows;}let matrix=parseCSV(raw.replace(/^\\uFEFF/,""));const norm=x=>String(x||"").toLowerCase().replace(/[^a-z0-9]/g,"");let head=(matrix.shift()||[]).map(norm);let ix=(...names)=>{for(const n of names){const j=head.indexOf(norm(n));if(j>=0)return j;}return -1};const iMember=ix("member","editor_name","editorname","owner"),iCity=ix("city","market","market_name","marketname"),iState=ix("state","state_code","statecode"),iStation=ix("station","station_name","stationname","call_sign","callsign"),iNetwork=ix("network","network_name","networkname","affiliation");if(iMember<0||iCity<0||iStation<0||iNetwork<0){toast("CSV must contain Member/Editor_Name, Market_Name, Station_Name and Network columns.");return}let rows=matrix.map(a=>normalizeMarketRecord({member:canonicalMember(a[iMember]),city:a[iCity],stateCode:iState>=0?a[iState]||"": "",timeZone:"",station:a[iStation],network:a[iNetwork]})).filter(x=>MEMBERS.includes(x.member)&&x.city&&x.station&&x.network);if(!rows.length){toast("No valid rows found. Check member names, station and required network column.");return}if(confirm(`Import ${rows.length} station records? Duplicate name variations will be grouped under one member. This replaces the current master station list.`)){state.stations=rows;state.allocations=[];state.completed=[];state.published=false;save();toast(rows.length+" station records imported and member names grouped.")}e.target.value=""};
